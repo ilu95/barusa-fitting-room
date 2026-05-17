@@ -1,14 +1,10 @@
-'use client'; // Next.js App Router에서 클라이언트 컴포넌트 사용 시 필수
+'use client';
 
 import React, { useState, useEffect } from 'react';
 import { Camera, X, CheckCircle2, ChevronLeft, Upload, Palette, Ruler, Sparkles, Shirt } from 'lucide-react';
 
-// ============================================================================
-// ⚙️ 프로덕션 환경 변수 바인딩
-// ============================================================================
 const FAL_API_KEY = process.env.NEXT_PUBLIC_FAL_API_KEY || '';
 
-// TypeScript를 위한 타입 정의
 interface TargetProduct {
   name: string;
   category: string;
@@ -22,9 +18,7 @@ interface Scores {
 }
 
 export default function App() {
-  // 상태 관리 (TypeScript 타입 명시)
   const [step, setStep] = useState<number>(0);
-  const [productNo, setProductNo] = useState<string | null>(null);
   const [targetProduct, setTargetProduct] = useState<TargetProduct | null>(null);
 
   const [fit, setFit] = useState<string | null>(null);
@@ -36,45 +30,41 @@ export default function App() {
 
   const [scores, setScores] = useState<Scores | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [loadingText, setLoadingText] = useState<string>('가상 피팅을 준비 중입니다...');
 
-  // 1. 진입 (URL 파라미터 파싱 및 데이터 로드)
+  // 1. 카페24에서 넘겨준 상품 이미지 URL 수신
   useEffect(() => {
-    const initApp = async () => {
-      const params = new URLSearchParams(window.location.search);
-      const no = params.get('product_no');
+    const params = new URLSearchParams(window.location.search);
+    const imgParam = params.get('img');
 
-      setProductNo(no);
-
-      setTimeout(() => {
-        setTargetProduct({
-          name: "Vintage Polo Ralph Lauren Oxford Shirt",
-          category: "상의",
-          image_url: "https://images.unsplash.com/photo-1596755094514-f87e32f85e2c?w=800&q=80"
-        });
-        setStep(1);
-      }, 500);
-    };
-
-    initApp();
+    // DB 연결 없이, 카페24에서 넘겨준 실제 상품 썸네일 이미지를 바로 타겟으로 설정합니다.
+    if (imgParam) {
+      setTargetProduct({
+        name: "현재 상품",
+        category: "상의",
+        image_url: imgParam
+      });
+      setStep(1);
+    } else {
+      // 이미지 파라미터가 없으면 로컬 테스트용 이미지 세팅
+      setTargetProduct({
+        name: "테스트 상품",
+        category: "상의",
+        image_url: "https://images.unsplash.com/photo-1596755094514-f87e32f85e2c?w=800&q=80"
+      });
+      setStep(1);
+    }
   }, []);
 
-  // 2. 부모 창(Cafe24) 통신 (postMessage)
-  const closeFittingRoom = () => {
-    window.parent.postMessage({ type: 'BARUSA_CLOSE' }, '*');
-  };
+  const closeFittingRoom = () => window.parent.postMessage({ type: 'BARUSA_CLOSE' }, '*');
+  const addToCart = () => window.parent.postMessage({ type: 'BARUSA_ADD_TO_CART' }, '*');
 
-  const addToCart = () => {
-    window.parent.postMessage({ type: 'BARUSA_ADD_TO_CART' }, '*');
-  };
-
-  // 3. 사진 업로드 처리 (타입스크립트 Event 타입 지정)
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, type: string) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (ev) => {
-      // 결과값이 string인지 확인 후 저장
       const base64 = ev.target?.result;
       if (typeof base64 === 'string') {
         if (type === 'USER') {
@@ -89,57 +79,68 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // 4. 스코어링 생성기 
-  const generateScores = (isMixMatch: boolean): Scores => {
-    return {
-      colorScore: Math.floor(Math.random() * 8) + 92,
-      fitScore: Math.floor(Math.random() * 10) + 88,
-      styleScore: isMixMatch ? Math.floor(Math.random() * 5) + 95 : Math.floor(Math.random() * 12) + 85
-    };
+  const generateScores = (isMixMatch: boolean): Scores => ({
+    colorScore: Math.floor(Math.random() * 8) + 92,
+    fitScore: Math.floor(Math.random() * 10) + 88,
+    styleScore: isMixMatch ? Math.floor(Math.random() * 5) + 95 : Math.floor(Math.random() * 12) + 85
+  });
+
+  // 💡 폴링(Polling) 로직: 대표님의 테스트 파일과 100% 동일한 대기열 처리 방식
+  const pollResult = async (statusUrl: string, responseUrl: string): Promise<string> => {
+    const maxAttempts = 80;
+    const interval = 3000;
+
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, interval));
+      const statusRes = await fetch(statusUrl, { headers: { 'Authorization': 'Key ' + FAL_API_KEY } });
+      if (!statusRes.ok) throw new Error(`상태 확인 실패 (${statusRes.status})`);
+
+      const statusData = await statusRes.json();
+
+      if (statusData.status === 'COMPLETED') {
+        const resultRes = await fetch(responseUrl, { headers: { 'Authorization': 'Key ' + FAL_API_KEY } });
+        if (!resultRes.ok) throw new Error('결과 가져오기 실패');
+        const result = await resultRes.json();
+        const images = result.images || result.output?.images;
+        if (!images || !images[0]) throw new Error('결과 이미지 누락');
+        return images[0].url || images[0];
+      } else if (statusData.status === 'FAILED') {
+        throw new Error(statusData.error || statusData.detail || '생성 실패');
+      } else {
+        const dots = '.'.repeat((i % 3) + 1);
+        setLoadingText(`AI 분석 및 이미지 생성 중${dots}`);
+      }
+    }
+    throw new Error('시간 초과');
   };
 
-  // 5. VTON API 호출 
+  // 💡 대표님 테스트 파일 기준 /edit 엔드포인트 및 image_urls 배열 스키마 적용
   const runVTON = async (sourceImage: string, referenceImage: string, isMixMatch: boolean = false) => {
     if (!FAL_API_KEY) {
-      setTimeout(() => {
-        const dummyImage = isMixMatch
-          ? "https://images.unsplash.com/photo-1539109136881-3be0616acf4b?w=800&q=80"
-          : "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=800&q=80";
-        setScores(generateScores(isMixMatch));
-        if (isMixMatch) {
-          setResultImage2(dummyImage);
-          setStep(6);
-        } else {
-          setResultImage1(dummyImage);
-          setStep(4);
-        }
-      }, 3000);
+      setErrorMsg("API 키가 없습니다.");
       return;
     }
 
     try {
-      const fitPrompt = fit === 'OVERSIZED'
-        ? "relaxed oversized fit, dropped shoulders"
-        : "standard regular fit";
+      setLoadingText('FAL.AI 서버에 작업을 요청하는 중...');
 
+      // 테스트 파일에서 성공했던 프롬프트 적용
       const instruction = isMixMatch
-        ? `Modify image_url: Replace the person's bottom clothing with the garment provided in reference_images. Keep top clothing, identity, and background exactly the same.`
-        : `Modify image_url: Replace the person's top clothing with the garment provided in reference_images. Fit: ${fitPrompt}. Keep identity and background exactly the same.`;
-
-      const maskPrompt = isMixMatch ? "the pants, skirt, lower body" : "the shirt, top clothing";
+        ? `The person in image 1 is wearing the pants/skirt/bottom shown in image 2. Keep the person's face, hair, skin, upper body clothing, and background exactly the same. Seamlessly replace only the lower body clothing. Photorealistic, professional fashion photography.`
+        : `The person in image 1 is wearing the top/shirt/jacket shown in image 2. Keep the person's face, hair, skin, lower body clothing, and background exactly the same. Seamlessly replace only the upper body clothing. Photorealistic, professional fashion photography.`;
 
       const payload = {
-        image_url: sourceImage,
-        reference_images: [{ image_url: referenceImage }],
         prompt: instruction,
-        mask_prompt: maskPrompt,
-        image_guidance_scale: 20.0,
-        content_reference_scale: 1.0,
+        image_urls: [sourceImage, referenceImage], // 💡 배열 형태로 순서대로 전송
+        num_images: 1,
         aspect_ratio: "3:4",
-        resolution: "1K"
+        output_format: 'jpeg',
+        resolution: "2K",
+        limit_generations: true
       };
 
-      const response = await fetch('https://fal.run/fal-ai/nano-banana-2', {
+      // 1. 대기열(Queue)에 작업 등록
+      const submitRes = await fetch('https://queue.fal.run/fal-ai/nano-banana-2/edit', {
         method: 'POST',
         headers: {
           'Authorization': `Key ${FAL_API_KEY}`,
@@ -148,28 +149,33 @@ export default function App() {
         body: JSON.stringify(payload)
       });
 
-      if (!response.ok) {
-        throw new Error("API 요청 실패");
+      if (!submitRes.ok) {
+        const err = await submitRes.json();
+        throw new Error(err.detail || '작업 등록 실패');
       }
 
-      const data = await response.json();
-      const url = data.images && data.images[0] ? data.images[0].url : null;
+      const submitData = await submitRes.json();
+      const statusUrl = submitData.status_url;
+      const responseUrl = submitData.response_url;
 
-      if (url) {
+      if (!statusUrl || !responseUrl) throw new Error('대기열 URL 발급 실패');
+
+      // 2. 결과 나올 때까지 폴링(Polling) 대기
+      const outputUrl = await pollResult(statusUrl, responseUrl);
+
+      if (outputUrl) {
         setScores(generateScores(isMixMatch));
         if (isMixMatch) {
-          setResultImage2(url);
+          setResultImage2(outputUrl);
           setStep(6);
         } else {
-          setResultImage1(url);
+          setResultImage1(outputUrl);
           setStep(4);
         }
-      } else {
-        throw new Error("이미지 URL 누락");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      setErrorMsg("가상 피팅 중 오류가 발생했습니다.");
+      setErrorMsg(`오류 발생: ${e.message}`);
     }
   };
 
@@ -182,19 +188,14 @@ export default function App() {
   }, [step]);
 
 
-  // ============================================================================
-  // 🎨 스코어링 카드 UI 컴포넌트 (타입스크립트 적용)
-  // ============================================================================
   const ScoringCard = ({ scores, isMixMatch }: { scores: Scores | null, isMixMatch: boolean }) => {
     if (!scores) return null;
-
     return (
       <div className="bg-gray-50 p-4 rounded-2xl mb-4 border border-gray-100 shadow-inner">
         <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-1">
           <Sparkles size={12} /> Virtual MD Analysis
         </h3>
         <div className="space-y-3">
-          {/* 피부톤 매치 */}
           <div>
             <div className="flex justify-between items-center mb-1">
               <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5"><Palette size={16} className="text-blue-500" /> 피부톤 조화도</span>
@@ -202,24 +203,20 @@ export default function App() {
             </div>
             <p className="text-[11px] text-gray-500 leading-tight">고객님의 퍼스널 컬러에 자연스럽게 녹아들어 안색을 환하게 밝혀줍니다.</p>
           </div>
-
-          {/* 사이즈 핏 */}
           <div>
             <div className="flex justify-between items-center mb-1">
               <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5"><Ruler size={16} className="text-emerald-500" /> 희망 핏 달성률</span>
               <span className="text-emerald-600 font-black">{scores.fitScore}점</span>
             </div>
-            <p className="text-[11px] text-gray-500 leading-tight">선택하신 '{fit === 'OVERSIZED' ? '오버핏' : '정핏'}' 실루엣이 고객님의 체형 비율에 맞춰 완벽하게 연출되었습니다.</p>
+            <p className="text-[11px] text-gray-500 leading-tight">선택하신 '{fit === 'OVERSIZED' ? '오버핏' : '정핏'}' 실루엣이 고객님의 체형에 맞춰 연출되었습니다.</p>
           </div>
-
-          {/* 코디 조화도 (믹스매치일 경우 강조) */}
           {isMixMatch && (
             <div className="pt-2 border-t border-gray-200">
               <div className="flex justify-between items-center mb-1">
                 <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5"><Shirt size={16} className="text-purple-500" /> 스타일링 밸런스</span>
                 <span className="text-purple-600 font-black">{scores.styleScore}점</span>
               </div>
-              <p className="text-[11px] text-gray-500 leading-tight">함께 매치하신 소장품과 타겟 상품이 트렌디한 무드를 완성합니다. 강력 추천하는 코디입니다.</p>
+              <p className="text-[11px] text-gray-500 leading-tight">함께 매치하신 소장품과 타겟 상품이 트렌디한 무드를 완성합니다.</p>
             </div>
           )}
         </div>
@@ -227,9 +224,6 @@ export default function App() {
     );
   };
 
-  // ============================================================================
-  // 🎨 전체 UI 렌더링
-  // ============================================================================
   return (
     <div className="fixed inset-0 z-[9999] bg-black/60 font-sans flex justify-center items-end sm:items-center">
       <div className="w-full max-w-[480px] h-full sm:h-[90vh] bg-transparent relative overflow-hidden sm:rounded-2xl shadow-2xl flex flex-col justify-end sm:justify-start">
@@ -240,7 +234,6 @@ export default function App() {
           </button>
         )}
 
-        {/* Step 1: 핏 선택 */}
         <div className={`absolute bottom-0 w-full bg-white rounded-t-3xl transition-transform duration-500 ease-out z-40 ${step === 1 ? 'translate-y-0' : 'translate-y-full'}`}>
           <div className="p-6 pt-4">
             <div className="w-12 h-1.5 bg-gray-200 mx-auto mb-8 rounded-full" />
@@ -260,7 +253,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Step 2: 전신사진 업로드 */}
         <div className={`absolute inset-0 bg-white z-50 transition-transform duration-500 ease-in-out flex flex-col ${step === 2 ? 'translate-y-0' : 'translate-y-full'}`}>
           <div className="flex items-center p-4 border-b border-gray-100">
             <button onClick={() => setStep(1)} className="p-2"><ChevronLeft size={24} className="text-gray-800" /></button>
@@ -281,18 +273,16 @@ export default function App() {
           </div>
         </div>
 
-        {/* Step 3 & 5.5: 로딩 뷰 */}
         <div className={`absolute inset-0 bg-black/95 z-[60] transition-opacity duration-500 flex flex-col items-center justify-center text-white ${(step === 3 || step === 5.5) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
           <div className="w-64 h-1.5 bg-gray-800 rounded-full overflow-hidden mb-8">
             <div className="h-full bg-white animate-[pulse_1.5s_ease-in-out_infinite] w-1/2 rounded-full" />
           </div>
-          <p className="text-sm font-medium tracking-widest text-gray-300 animate-pulse mb-2">
-            {step === 3 ? "실루엣 및 퍼스널 컬러 분석 중..." : "코디네이션 밸런스 스코어링 중..."}
+          <p className="text-sm font-medium tracking-widest text-gray-300 animate-pulse mb-2 text-center px-6">
+            {loadingText}
           </p>
-          <p className="text-[10px] text-gray-500">Virtual MD가 최적의 스타일링을 계산하고 있습니다.</p>
+          <p className="text-[10px] text-gray-500">통상 30초~1분 정도 소요됩니다.</p>
         </div>
 
-        {/* Step 4 & 6: 결과 화면 (Single / Mix Match) */}
         <div className={`absolute inset-0 bg-[#0a0a0a] z-[60] transition-transform duration-500 ease-in-out flex flex-col ${(step === 4 || step === 6) ? 'translate-y-0' : 'translate-y-full'}`}>
           <div className="absolute top-0 w-full p-4 flex justify-between items-center z-50 bg-gradient-to-b from-black/60 to-transparent">
             <button onClick={closeFittingRoom} className="p-2 text-white/90 hover:text-white drop-shadow-md"><X size={24} /></button>
@@ -301,20 +291,18 @@ export default function App() {
           </div>
 
           <div className="flex-1 w-full relative overflow-hidden flex items-center justify-center">
-            {/* null 에러 방지를 위해 기본 렌더링 값 설정 */}
             {(step === 6 ? resultImage2 : resultImage1) && (
               <img src={(step === 6 ? resultImage2 : resultImage1) as string} alt="Fitting Result" className="w-full h-full object-cover animate-fade-in" />
             )}
           </div>
 
-          {/* 하단 스코어링 및 액션 패널 */}
           <div className="bg-white p-6 rounded-t-3xl -mt-6 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] flex flex-col h-auto max-h-[60vh] overflow-y-auto">
             <div className="w-12 h-1.5 bg-gray-200 mx-auto mb-5 rounded-full flex-shrink-0" />
 
             <ScoringCard scores={scores} isMixMatch={step === 6} />
 
             <div className="flex flex-col gap-3 mt-2">
-              {step === 4 && targetProduct?.category === '상의' && (
+              {step === 4 && (
                 <button onClick={() => setStep(5)} className="w-full py-3.5 border border-gray-300 text-gray-900 font-bold flex items-center justify-center gap-2 hover:bg-gray-50 transition-colors rounded-xl text-sm">
                   👖 내 옷과 매치해보기 (코디 확인)
                 </button>
@@ -327,7 +315,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Step 5: 내 옷 추가 */}
         <div className={`absolute inset-0 bg-black/60 z-[70] transition-opacity ${step === 5 ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
           <div className={`absolute bottom-0 w-full bg-white rounded-t-3xl transition-transform duration-300 delay-100 ${step === 5 ? 'translate-y-0' : 'translate-y-full'}`}>
             <div className="p-6 pt-4">
@@ -346,7 +333,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* 에러 모달 */}
         {errorMsg && (
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white p-6 rounded-2xl shadow-xl z-[9999] text-center w-3/4">
             <p className="text-red-500 font-bold mb-4">{errorMsg}</p>
