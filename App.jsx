@@ -1,0 +1,379 @@
+import React, { useState, useEffect } from 'react';
+import { Camera, X, CheckCircle2, ChevronLeft, Upload, Palette, Ruler, Sparkles } from 'lucide-react';
+
+// ============================================================================
+// ⚙️ 환경 변수 및 설정
+// ============================================================================
+const FAL_API_KEY = process.env.NEXT_PUBLIC_FAL_API_KEY || ''; // FAL.AI API Key
+
+export default function App() {
+  // 상태 관리
+  const [step, setStep] = useState(0);
+  const [productNo, setProductNo] = useState(null);
+  const [targetProduct, setTargetProduct] = useState(null);
+
+  const [fit, setFit] = useState(null);
+  const [userImageBase64, setUserImageBase64] = useState(null);
+  const [bottomImageBase64, setBottomImageBase64] = useState(null);
+
+  const [resultImage1, setResultImage1] = useState(null);
+  const [resultImage2, setResultImage2] = useState(null);
+
+  // 구매 확신 스코어링 상태
+  const [scores, setScores] = useState(null);
+
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // 1. 진입 (URL 파라미터 파싱 및 데이터 로드)
+  useEffect(() => {
+    const initApp = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const no = params.get('product_no');
+
+      setProductNo(no);
+
+      // 모듈 안정성을 위해 외부 DB SDK 대신 Mock 데이터 / REST API 패턴 사용
+      // 실제 환경에서는 백엔드 API를 호출하도록 교체 가능
+      setTimeout(() => {
+        setTargetProduct({
+          name: "Vintage 90s Oxford Shirt",
+          category: "상의",
+          image_url: "https://images.unsplash.com/photo-1596755094514-f87e32f85e2c?w=800&q=80"
+        });
+        setStep(1);
+      }, 500);
+    };
+
+    initApp();
+  }, []);
+
+  // 2. 부모 창(Cafe24) 통신 (postMessage)
+  const closeFittingRoom = () => {
+    window.parent.postMessage({ type: 'BARUSA_CLOSE' }, '*');
+  };
+
+  const addToCart = () => {
+    window.parent.postMessage({ type: 'BARUSA_ADD_TO_CART' }, '*');
+  };
+
+  // 3. 사진 업로드 처리 (Base64 변환)
+  const handleImageUpload = (e, type) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const base64 = ev.target.result;
+      if (type === 'USER') {
+        setUserImageBase64(base64);
+        setStep(3);
+      } else if (type === 'BOTTOM') {
+        setBottomImageBase64(base64);
+        setStep(5.5);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 4. 스코어링 생성기 (MD Pick AI 분석 흉내)
+  const generateScores = (isMixMatch) => {
+    return {
+      colorScore: Math.floor(Math.random() * 8) + 92, // 92~99점
+      fitScore: Math.floor(Math.random() * 10) + 88, // 88~97점
+      styleScore: isMixMatch ? Math.floor(Math.random() * 5) + 95 : Math.floor(Math.random() * 12) + 85 // 믹스매치시 점수 상승
+    };
+  };
+
+  // 5. VTON API 호출 (Nano Banana 2)
+  const runVTON = async (sourceImage, referenceImage, isMixMatch = false) => {
+    if (!FAL_API_KEY) {
+      // API 키가 없으면 로컬 테스트용 Mock 이미지와 스코어로 대체 (UI 검증용)
+      setTimeout(() => {
+        const dummyImage = "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=800&q=80";
+        setScores(generateScores(isMixMatch));
+        if (isMixMatch) {
+          setResultImage2(dummyImage);
+          setStep(6);
+        } else {
+          setResultImage1(dummyImage);
+          setStep(4);
+        }
+      }, 3000);
+      return;
+    }
+
+    try {
+      const fitPrompt = fit === 'OVERSIZED'
+        ? "relaxed oversized fit, dropped shoulders"
+        : "standard regular fit";
+
+      const instruction = isMixMatch
+        ? `Modify image_url: Replace the person's bottom clothing with the garment provided in reference_images. Keep top
+clothing, identity, and background exactly the same.`
+        : `Modify image_url: Replace the person's top clothing with the garment provided in reference_images. Fit: ${fitPrompt}.
+Keep identity and background exactly the same.`;
+
+      const maskPrompt = isMixMatch ? "the pants, skirt, lower body" : "the shirt, top clothing";
+
+      const payload = {
+        image_url: sourceImage,
+        reference_images: [{ image_url: referenceImage }],
+        prompt: instruction,
+        mask_prompt: maskPrompt,
+        image_guidance_scale: 20.0,
+        content_reference_scale: 1.0,
+        aspect_ratio: "3:4",
+        resolution: "1K"
+      };
+
+      const response = await fetch('https://fal.run/fal-ai/nano-banana-2', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Key ${FAL_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("API 요청 실패");
+      }
+
+      const data = await response.json();
+      const url = data.images && data.images[0] ? data.images[0].url : null;
+
+      if (url) {
+        setScores(generateScores(isMixMatch)); // AI 분석 완료 시 스코어 생성
+        if (isMixMatch) {
+          setResultImage2(url);
+          setStep(6);
+        } else {
+          setResultImage1(url);
+          setStep(4);
+        }
+      } else {
+        throw new Error("이미지 URL 누락");
+      }
+    } catch (e) {
+      console.error(e);
+      setErrorMsg("가상 피팅 중 오류가 발생했습니다.");
+    }
+  };
+
+  useEffect(() => {
+    if (step === 3 && userImageBase64 && targetProduct) {
+      runVTON(userImageBase64, targetProduct.image_url, false);
+    } else if (step === 5.5 && resultImage1 && bottomImageBase64) {
+      runVTON(resultImage1, bottomImageBase64, true);
+    }
+  }, [step]);
+
+
+  // ============================================================================
+  // 🎨 스코어링 카드 UI 컴포넌트
+  // ============================================================================
+  const ScoringCard = ({ scores, isMixMatch }) => {
+    if (!scores) return null;
+
+    return (
+      <div className="bg-gray-50 p-4 rounded-2xl mb-4 border border-gray-100 shadow-inner">
+        <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-1">
+          <Sparkles size={12} /> Virtual MD Analysis
+        </h3>
+        <div className="space-y-3">
+          {/* 피부톤 매치 */}
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5">
+                <Palette size={16} className="text-blue-500" /> 피부톤 조화도
+              </span>
+              <span className="text-blue-600 font-black">{scores.colorScore}점</span>
+            </div>
+            <p className="text-[11px] text-gray-500 leading-tight">고객님의 퍼스널 컬러에 자연스럽게 녹아들어 안색을 환하게 밝혀줍니다.</p>
+          </div>
+
+          {/* 사이즈 핏 */}
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5">
+                <Ruler size={16} className="text-emerald-500" /> 희망 핏 달성률
+              </span>
+              <span className="text-emerald-600 font-black">{scores.fitScore}점</span>
+            </div>
+            <p className="text-[11px] text-gray-500 leading-tight">선택하신 '{fit === 'OVERSIZED' ? '오버핏' : '정핏'}' 실루엣이 고객님의 체형
+              비율에 맞춰 완벽하게 연출되었습니다.</p>
+          </div>
+
+          {/* 코디 조화도 (믹스매치일 경우 강조) */}
+          {isMixMatch && (
+            <div className="pt-2 border-t border-gray-200">
+              <div className="flex justify-between items-center mb-1">
+                <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5">
+                  <Shirt size={16} className="text-purple-500" /> 스타일링 밸런스
+                </span>
+                <span className="text-purple-600 font-black">{scores.styleScore}점</span>
+              </div>
+              <p className="text-[11px] text-gray-500 leading-tight">함께 매치하신 소장품과 타겟 상품이 트렌디한 무드를 완성합니다. 강력 추천하는 코디입니다.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ============================================================================
+  // 🎨 전체 UI 렌더링
+  // ============================================================================
+  return (
+    <div className="fixed inset-0 z-[9999] bg-black/60 font-sans flex justify-center items-end sm:items-center">
+      <div
+        className="w-full max-w-[480px] h-full sm:h-[90vh] bg-transparent relative overflow-hidden sm:rounded-2xl shadow-2xl flex flex-col justify-end sm:justify-start">
+
+        {(step === 1 || step === 2) && (
+          <button onClick={closeFittingRoom}
+            className="absolute top-4 right-4 z-50 p-2 bg-white/20 backdrop-blur-md rounded-full text-white hover:bg-white/30 transition">
+            <X size={20} />
+          </button>
+        )}
+
+        {/* Step 1: 핏 선택 */}
+        <div className={`absolute bottom-0 w-full bg-white rounded-t-3xl transition-transform duration-500 ease-out z-40
+      ${step === 1 ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div className="p-6 pt-4">
+            <div className="w-12 h-1.5 bg-gray-200 mx-auto mb-8 rounded-full" />
+            <h2 className="text-2xl font-bold mb-2 tracking-tight text-gray-900">어떤 핏으로 입고 싶으신가요?</h2>
+            <p className="text-sm text-gray-500 mb-8">체형과 원하시는 무드에 맞춰 착장을 시뮬레이션합니다.</p>
+
+            <div className="flex gap-3 mb-4">
+              <button onClick={() => { setFit('REGULAR'); setStep(2); }} className="flex-1 aspect-[4/3] border
+            border-gray-200 p-4 flex flex-col items-center justify-center gap-3 hover:border-black transition-all
+            rounded-2xl bg-gray-50 hover:bg-white">
+                <span className="font-bold text-base text-gray-900">딱 맞는 정핏</span>
+                <span className="text-xs text-gray-400 font-medium">Standard Fit</span>
+              </button>
+              <button onClick={() => { setFit('OVERSIZED'); setStep(2); }} className="flex-1 aspect-[4/3] border
+            border-gray-200 p-4 flex flex-col items-center justify-center gap-3 hover:border-black transition-all
+            rounded-2xl bg-gray-50 hover:bg-white">
+                <span className="font-bold text-base text-gray-900">여유로운 오버핏</span>
+                <span className="text-xs text-gray-400 font-medium">Loose Fit</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Step 2: 전신사진 업로드 */}
+        <div className={`absolute inset-0 bg-white z-50 transition-transform duration-500 ease-in-out flex flex-col
+      ${step === 2 ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div className="flex items-center p-4 border-b border-gray-100">
+            <button onClick={() => setStep(1)} className="p-2">
+              <ChevronLeft size={24} className="text-gray-800" />
+            </button>
+            <span className="mx-auto font-bold text-gray-900 pr-8">전신사진 등록</span>
+          </div>
+
+          <div className="flex-1 p-6 flex flex-col justify-center">
+            <h2 className="text-3xl font-bold mb-4 tracking-tight text-gray-900 leading-tight">거의 다 왔어요! ✨<br />전신사진을 올려주세요.
+            </h2>
+            <p className="text-sm text-gray-500 mb-10 leading-relaxed bg-gray-50 p-4 rounded-xl">
+              가장 최근에 찍은 정면 위주의 전신사진을 골라주세요.<br />AI가 체형을 분석하여 맞춤형 핏을 제안합니다.
+            </p>
+
+            <label
+              className="w-full aspect-[3/4] border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center gap-4 hover:border-black transition-colors rounded-3xl cursor-pointer shadow-inner">
+              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'USER')} />
+              <Camera size={48} className="text-gray-300" strokeWidth={1.5} />
+              <span className="text-base font-bold text-gray-600">앨범에서 사진 선택하기</span>
+            </label>
+          </div>
+        </div>
+
+        {/* Step 3 & 5.5: 로딩 뷰 */}
+        <div className={`absolute inset-0 bg-black/95 z-[60] transition-opacity duration-500 flex flex-col items-center
+      justify-center text-white ${(step === 3 || step === 5.5) ? 'opacity-100 pointer-events-auto'
+            : 'opacity-0 pointer-events-none'}`}>
+          <div className="w-64 h-1.5 bg-gray-800 rounded-full overflow-hidden mb-8">
+            <div className="h-full bg-white animate-[pulse_1.5s_ease-in-out_infinite] w-1/2 rounded-full" />
+          </div>
+          <p className="text-sm font-medium tracking-widest text-gray-300 animate-pulse mb-2">
+            {step === 3 ? "실루엣 및 퍼스널 컬러 분석 중..." : "코디네이션 밸런스 스코어링 중..."}
+          </p>
+          <p className="text-[10px] text-gray-500">Virtual MD가 최적의 스타일링을 계산하고 있습니다.</p>
+        </div>
+
+        {/* Step 4 & 6: 결과 화면 (Single / Mix Match) */}
+        <div className={`absolute inset-0 bg-[#0a0a0a] z-[60] transition-transform duration-500 ease-in-out flex flex-col
+      ${(step === 4 || step === 6) ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div
+            className="absolute top-0 w-full p-4 flex justify-between items-center z-50 bg-gradient-to-b from-black/60 to-transparent">
+            <button onClick={closeFittingRoom} className="p-2 text-white/90 hover:text-white drop-shadow-md">
+              <X size={24} />
+            </button>
+            <span className="text-[11px] font-black tracking-widest text-white/90 drop-shadow-md">VIRTUAL MD REPORT</span>
+            <div className="w-10" />
+          </div>
+
+          <div className="flex-1 w-full relative overflow-hidden">
+            <img src={step === 6 ? resultImage2 : resultImage1} alt="Fitting Result"
+              className="w-full h-full object-cover animate-fade-in" />
+          </div>
+
+          {/* 하단 스코어링 및 액션 패널 */}
+          <div
+            className="bg-white p-6 rounded-t-3xl -mt-6 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] flex flex-col h-auto max-h-[60vh] overflow-y-auto">
+            <div className="w-12 h-1.5 bg-gray-200 mx-auto mb-5 rounded-full flex-shrink-0" />
+
+            {/* 구매 확신 스코어링 카드 삽입 */}
+            <ScoringCard scores={scores} isMixMatch={step === 6} />
+
+            <div className="flex flex-col gap-3 mt-2">
+              {step === 4 && (
+                <button onClick={() => setStep(5)} className="w-full py-3.5 border border-gray-300 text-gray-900 font-bold flex
+            items-center justify-center gap-2 hover:bg-gray-50 transition-colors rounded-xl text-sm">
+                  👖 내 옷과 매치해보기 (코디 확인)
+                </button>
+              )}
+
+              <button onClick={addToCart}
+                className="w-full py-4 bg-black text-white font-bold flex items-center justify-center gap-2 rounded-xl text-sm shadow-lg hover:bg-gray-800 transition-all">
+                <CheckCircle2 size={18} /> {step === 4 ? '이대로 장바구니 담기' : '완벽한 코디, 바로 구매하기'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Step 5: 내 옷 추가 */}
+        <div className={`absolute inset-0 bg-black/60 z-[70] transition-opacity ${step === 5
+          ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+          <div className={`absolute bottom-0 w-full bg-white rounded-t-3xl transition-transform duration-300 delay-100
+        ${step === 5 ? 'translate-y-0' : 'translate-y-full'}`}>
+            <div className="p-6 pt-4">
+              <div className="w-12 h-1.5 bg-gray-200 mx-auto mb-6 rounded-full" />
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold tracking-tight">어떤 옷을 매치할까요?</h2>
+                <button onClick={() => setStep(4)} className="text-sm font-bold text-gray-400 px-2 py-1">취소</button>
+              </div>
+
+              <label
+                className="w-full aspect-video border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center gap-3 hover:border-black transition-colors mb-4 rounded-2xl cursor-pointer">
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'BOTTOM')} />
+                <Upload size={32} className="text-gray-400" strokeWidth={1.5} />
+                <span className="text-sm font-bold text-gray-600">소장하고 계신 하의 사진 업로드</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* 에러 모달 */}
+        {errorMsg && (
+          <div
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white p-6 rounded-2xl shadow-xl z-[9999] text-center w-3/4">
+            <p className="text-red-500 font-bold mb-4">{errorMsg}</p>
+            <button onClick={() => { setErrorMsg(''); closeFittingRoom(); }} className="bg-black text-white px-6 py-2
+        rounded-lg font-medium text-sm">닫기</button>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
