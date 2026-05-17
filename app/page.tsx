@@ -13,12 +13,10 @@ interface TargetProduct {
 
 interface Scores {
   colorScore: number;
-  fitScore: number;
   styleScore: number;
 }
 
 export default function App() {
-  // UX 간소화: step 1을 바로 사진 업로드로 시작합니다.
   const [step, setStep] = useState<number>(1);
   const [targetProduct, setTargetProduct] = useState<TargetProduct | null>(null);
 
@@ -33,17 +31,17 @@ export default function App() {
   const [loadingText, setLoadingText] = useState<string>('가상 피팅을 준비 중입니다...');
 
   useEffect(() => {
-    // Iframe 투명화를 위한 전역 CSS 설정 (카페24 화면이 비치도록)
     document.documentElement.style.backgroundColor = 'transparent';
     document.body.style.backgroundColor = 'transparent';
 
     const params = new URLSearchParams(window.location.search);
     const imgParam = params.get('img');
+    const nameParam = params.get('name') || "현재 상품"; // URL에서 상품명 추출
 
     if (imgParam) {
-      setTargetProduct({ name: "현재 상품", category: "상의", image_url: imgParam });
+      setTargetProduct({ name: nameParam, category: "auto", image_url: imgParam });
     } else {
-      setTargetProduct({ name: "테스트 상품", category: "상의", image_url: "https://images.unsplash.com/photo-1596755094514-f87e32f85e2c?w=800&q=80" });
+      setTargetProduct({ name: "테스트 상품", category: "auto", image_url: "https://images.unsplash.com/photo-1596755094514-f87e32f85e2c?w=800&q=80" });
     }
   }, []);
 
@@ -60,7 +58,7 @@ export default function App() {
       if (typeof base64 === 'string') {
         if (type === 'USER') {
           setUserImageBase64(base64);
-          setStep(2); // 업로드 즉시 로딩(VTON 연산)으로 이동
+          setStep(2);
         } else if (type === 'BOTTOM') {
           setBottomImageBase64(base64);
           setStep(4.5);
@@ -72,7 +70,6 @@ export default function App() {
 
   const generateScores = (isMixMatch: boolean): Scores => ({
     colorScore: Math.floor(Math.random() * 8) + 92,
-    fitScore: Math.floor(Math.random() * 10) + 88,
     styleScore: isMixMatch ? Math.floor(Math.random() * 5) + 95 : Math.floor(Math.random() * 12) + 85
   });
 
@@ -104,6 +101,14 @@ export default function App() {
     throw new Error('시간 초과');
   };
 
+  // 상품명 기반 카테고리 자동 분류기
+  const detectCategory = (name: string) => {
+    const lowerName = name.toLowerCase();
+    if (/(모자|캡|비니|햇|hat|cap|beanie)/.test(lowerName)) return 'hat';
+    if (/(하의|바지|팬츠|스커트|치마|pants|skirt|bottom|jeans|shorts)/.test(lowerName)) return 'bottom';
+    return 'top'; // 기본값은 상의
+  };
+
   const runVTON = async (sourceImage: string, referenceImage: string, isMixMatch: boolean = false) => {
     if (!FAL_API_KEY) {
       setErrorMsg("API 키가 없습니다.");
@@ -113,9 +118,19 @@ export default function App() {
     try {
       setLoadingText('FAL.AI 서버에 작업을 요청하는 중...');
 
-      const instruction = isMixMatch
-        ? `The person in image 1 is wearing the pants/skirt/bottom shown in image 2. Keep the person's face, hair, skin, upper body clothing, and background exactly the same. Seamlessly replace only the lower body clothing. Photorealistic, professional fashion photography.`
-        : `The person in image 1 is wearing the top/shirt/jacket shown in image 2. Fit: standard regular fit, natural drape. Keep the person's face, hair, skin, lower body clothing, and background exactly the same. Seamlessly replace only the upper body clothing. Photorealistic, professional fashion photography.`;
+      const categoryType = detectCategory(targetProduct?.name || '');
+      let instruction = '';
+
+      // 카테고리별 맞춤형 프롬프트 분기
+      if (isMixMatch) {
+        instruction = `The person in image 1 is wearing the pants/skirt/bottom shown in image 2. Keep the person's face, hair, skin, upper body clothing, and background exactly the same. Seamlessly replace only the lower body clothing. Photorealistic, professional fashion photography.`;
+      } else if (categoryType === 'hat') {
+        instruction = `The person in image 1 is wearing the hat/cap/headwear shown in image 2 on their head. Keep the person's face, hair (adapted to the hat), all clothing, and background exactly the same. Seamlessly add the hat to the head. Photorealistic, professional fashion photography.`;
+      } else if (categoryType === 'bottom') {
+        instruction = `The person in image 1 is wearing the pants/skirt/bottom shown in image 2. Keep the person's face, hair, skin, upper body clothing, and background exactly the same. Seamlessly replace only the lower body clothing. Photorealistic, professional fashion photography.`;
+      } else {
+        instruction = `The person in image 1 is wearing the top/shirt/jacket shown in image 2. Fit: standard regular fit, natural drape. Keep the person's face, hair, skin, lower body clothing, and background exactly the same. Seamlessly replace only the upper body clothing. Photorealistic, professional fashion photography.`;
+      }
 
       const payload = {
         prompt: instruction,
@@ -189,13 +204,6 @@ export default function App() {
             </div>
             <p className="text-[11px] text-gray-500 leading-tight">고객님의 퍼스널 컬러에 자연스럽게 녹아들어 안색을 환하게 밝혀줍니다.</p>
           </div>
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <span className="flex items-center text-sm font-bold text-gray-800 gap-1.5"><Ruler size={16} className="text-emerald-500" /> 사이즈 매칭 정밀도</span>
-              <span className="text-emerald-600 font-black">{scores.fitScore}점</span>
-            </div>
-            <p className="text-[11px] text-gray-500 leading-tight">선택하신 상품의 실측 사이즈가 고객님의 체형에 매우 적합합니다.</p>
-          </div>
           {isMixMatch && (
             <div className="pt-2 border-t border-gray-200">
               <div className="flex justify-between items-center mb-1">
@@ -210,26 +218,22 @@ export default function App() {
     );
   };
 
+  // 현재 상품이 상의인지 여부를 판단하여 "내 하의와 매치해보기" 버튼 표시 여부 결정
+  const isTopCategory = detectCategory(targetProduct?.name || '') === 'top';
+
   return (
-    // 💡 fixed 컨테이너의 높이를 h-[100dvh]로 선언하여 모바일 브라우저 하단바 높이를 정밀 계산
     <div className="fixed inset-0 z-[9999] bg-transparent font-sans flex justify-center items-end sm:items-center h-[100dvh] w-screen overflow-hidden">
 
-      {/* 💡 최상위 바루픽 팝업 뷰포트 - 모바일 환경 h-[100dvh]로 고정 */}
       <div className="w-full max-w-[480px] h-[100dvh] sm:h-[88vh] bg-white relative overflow-hidden sm:rounded-2xl shadow-2xl flex flex-col justify-between">
 
-        {/* 공통 닫기 버튼 */}
         <button onClick={closeFittingRoom} className="absolute top-4 right-4 z-[100] p-2 bg-black/10 backdrop-blur-md rounded-full text-gray-800 hover:bg-black/20 transition">
           <X size={20} />
         </button>
 
-        {/* ---------------------------------------------------- */}
-        {/* Step 1: 전신사진 업로드 (모바일 스크롤 가능 및 안전 규격화) */}
-        {/* ---------------------------------------------------- */}
-        <div className={`absolute inset-0 bg-white z-50 transition-transform duration-500 ease-in-out flex flex-col h-full overflow-y-auto pb-12 ${step === 1 ? 'translate-y-0' : 'translate-y-full'}`}>
-          <div className="flex-1 p-6 flex flex-col justify-start pt-12">
+        <div className={`absolute inset-0 bg-white z-50 transition-transform duration-500 ease-in-out flex flex-col h-full overflow-y-auto ${step === 1 ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div className="flex-1 p-6 flex flex-col justify-start pt-12" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 32px)' }}>
             <h2 className="text-2xl font-black mb-4 tracking-tight text-gray-900 leading-tight">내 사진에<br />바로 입어보기 ✨</h2>
 
-            {/* 사이즈 안내 박스 */}
             <div className="mb-6 bg-gray-50 p-4 rounded-2xl border border-gray-100">
               <p className="text-xs font-bold text-gray-900 mb-1.5">💡 상세페이지에서 사이즈를 확인하셨나요?</p>
               <p className="text-[11px] text-gray-500 leading-relaxed">
@@ -237,7 +241,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* 💡 aspect 비율이 높이를 터뜨리지 않도록 max-h-[320px] 상한선을 부여함 */}
             <label className="w-full aspect-[3/4] max-h-[320px] mx-auto border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center gap-4 hover:border-black hover:bg-gray-100 transition-colors rounded-3xl cursor-pointer shadow-sm p-4">
               <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'USER')} />
               <Camera size={44} className="text-gray-400" strokeWidth={1.5} />
@@ -247,9 +250,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* ---------------------------------------------------- */}
-        {/* Step 2 & 4.5: 로딩 뷰 */}
-        {/* ---------------------------------------------------- */}
         <div className={`absolute inset-0 bg-black/95 z-[60] transition-opacity duration-500 flex flex-col items-center justify-center text-white ${(step === 2 || step === 4.5) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
           <div className="w-64 h-1.5 bg-gray-800 rounded-full overflow-hidden mb-8">
             <div className="h-full bg-white animate-[pulse_1.5s_ease-in-out_infinite] w-1/2 rounded-full" />
@@ -260,9 +260,6 @@ export default function App() {
           <p className="text-[10px] text-gray-500">통상 30초~1분 정도 소요됩니다.</p>
         </div>
 
-        {/* ---------------------------------------------------- */}
-        {/* Step 3 & 5: 결과 화면 (모바일 가려짐 방지 스크롤 & 패딩 처리) */}
-        {/* ---------------------------------------------------- */}
         <div className={`absolute inset-0 bg-[#0a0a0a] z-[60] transition-transform duration-500 ease-in-out flex flex-col h-full ${(step === 3 || step === 5) ? 'translate-y-0' : 'translate-y-full'}`}>
           <div className="absolute top-0 w-full p-4 flex justify-between items-center z-50 bg-gradient-to-b from-black/60 to-transparent">
             <span className="text-[11px] font-black tracking-widest text-white/90 drop-shadow-md px-2">VIRTUAL MD REPORT</span>
@@ -275,14 +272,14 @@ export default function App() {
             )}
           </div>
 
-          {/* 💡 max-h-[55dvh]로 지정해 이미지 영역을 확보하고, 모바일 브라우저바 가림 대응을 위한 pb-16 패딩 확보 */}
-          <div className="bg-white p-5 rounded-t-3xl -mt-6 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] flex flex-col h-auto max-h-[55dvh] overflow-y-auto pb-16">
+          <div className="bg-white p-5 rounded-t-3xl -mt-6 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] flex flex-col shrink-0 h-auto max-h-[60dvh] overflow-y-auto" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 32px)' }}>
             <div className="w-12 h-1 bg-gray-200 mx-auto mb-4 flex-shrink-0" />
 
             <ScoringCard scores={scores} isMixMatch={step === 5} />
 
-            <div className="flex flex-col gap-2.5 mt-1 pb-4">
-              {step === 3 && targetProduct?.category === '상의' && (
+            <div className="flex flex-col gap-2.5 mt-1 pb-2">
+              {/* 상의일 경우에만 하의 매치 버튼 노출 */}
+              {step === 3 && isTopCategory && (
                 <button onClick={() => setStep(4)} className="w-full py-3 border border-gray-300 text-gray-900 font-bold flex items-center justify-center gap-2 hover:bg-gray-50 transition-colors rounded-xl text-xs">
                   👖 내 하의와 매치해보기 (코디 확인)
                 </button>
@@ -295,11 +292,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* ---------------------------------------------------- */}
-        {/* Step 4: 내 옷 추가 하의 매칭 */}
-        {/* ---------------------------------------------------- */}
         <div className={`absolute inset-0 bg-black/60 z-[70] transition-opacity ${step === 4 ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
-          <div className={`absolute bottom-0 w-full bg-white rounded-t-3xl transition-transform duration-300 delay-100 p-6 pb-12 ${step === 4 ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div className={`absolute bottom-0 w-full bg-white rounded-t-3xl transition-transform duration-300 delay-100 px-6 pt-6`} style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 32px)' }}>
             <div className="w-12 h-1 bg-gray-200 mx-auto mb-5 rounded-full" />
             <div className="flex justify-between items-center mb-5">
               <h2 className="text-xl font-bold tracking-tight">어떤 옷을 매치할까요?</h2>
